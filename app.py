@@ -20,6 +20,7 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 STATE_FILE = os.path.join(DATA_DIR, "trail_state.json")
 LOG_FILE = os.path.join(DATA_DIR, "trail_activity.log")
+
 SERVICE_SCRIPT_CANDIDATES = [
     os.path.join(PROJECT_ROOT, "scripts", "legendary_trail_service.py"),
     os.path.join(PROJECT_ROOT, "legendary_trail_service.py")
@@ -48,11 +49,10 @@ def load_state() -> dict:
         try:
             with open(STATE_FILE, "r", encoding="utf-8") as f:
                 state = json.load(f)
-                # Verify process liveness
                 pid = state.get("pid")
                 if state.get("status") == "running" and pid:
+                    # Verify if the process is actually running
                     if not psutil.pid_exists(pid):
-                        # Process terminated outside or finished
                         state["status"] = "sleep"
                         state["pid"] = None
                         save_state(state)
@@ -115,12 +115,12 @@ st.title("Legendary_trail")
 # Status Display
 if is_running:
     curr_layer = state.get("current_layer")
-    layer_txt = f" (Executing Floor: Layer {curr_layer})" if curr_layer else ""
+    layer_txt = f" (Floor: Layer {curr_layer})" if curr_layer else ""
     st.markdown(
         f"""
         <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
             <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
-                <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px; animation:blink 1.2s infinite;"></span>
+                <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
                 Status: running {layer_txt}
             </h3>
             <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">PID: {state.get('pid')} | Started: {state.get('start_time')}</p>
@@ -145,9 +145,9 @@ else:
 # Device Login Alert Banner
 if state.get("device_login_alert"):
     st.error(
-        "🚨 **DEVICE LOGIN DETECTED**: You logged in from your mobile device! "
-        "The service was automatically stopped to protect your account and is now in **sleep** mode. "
-        "When ready, click **Start Trail** to resume."
+        "🚨 **DEVICE LOGIN DETECTED**: You logged into the game from your mobile device! "
+        "The service was automatically stopped and put into **sleep** mode to avoid session conflict. "
+        "Click **Start Trail** whenever you are ready to resume."
     )
 
 # From & To Dropdowns
@@ -168,7 +168,17 @@ with col_btn1:
         if is_running:
             st.warning("Trail is already running!")
         else:
-            # Prepare background process
+            ensure_data_dir()
+
+            # Set up UTF-8 unbuffered environment for the child process
+            sub_env = os.environ.copy()
+            sub_env["PYTHONIOENCODING"] = "utf-8"
+            sub_env["PYTHONUTF8"] = "1"
+            sub_env["PYTHONUNBUFFERED"] = "1"
+
+            # Open activity log so subprocess output writes directly
+            log_handle = open(LOG_FILE, "a", encoding="utf-8", errors="replace")
+
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
@@ -182,9 +192,13 @@ with col_btn1:
 
             proc = subprocess.Popen(
                 cmd,
+                stdout=log_handle,
+                stderr=log_handle,
+                stdin=subprocess.DEVNULL,
                 creationflags=creation_flags,
-                close_fds=True
+                env=sub_env
             )
+            log_handle.close()
 
             # Update state immediately
             state["status"] = "running"
