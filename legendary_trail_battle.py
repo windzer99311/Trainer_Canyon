@@ -38,7 +38,7 @@ LAYER_PAYLOADS = {
     1: {
         "name": "Layer 1 (Lvl 1 - 10)",
         "payload": bytes.fromhex(
-            "66b3c5b15163f6ff822c71c4f6892d64c7e2972a65c8dafe3762d39de32a7ed29af93869677aedf9962b7e91a5736f7c69c4f6892d64860e747a7dd2f08a3662a7147b7b66cecef93863d8776f7c69d587f02c64c165747a66d29af93863ce77"
+            "66b3c5b15163f6ff822c71c4f6892d64c7e2972a65c8ae893662d59bec2a7ececef93869677aedf9962b7eecbd736f7d69c4f6892d64baf86f687d7cc7e2972a65cf0e69667ac9bb9b2b7ed9346e697bce9df82d71f76b68667ac9cfec2a7ee970"
         ),
     },
     2: {
