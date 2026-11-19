@@ -31,7 +31,11 @@ if sys.stderr and hasattr(sys.stderr, "reconfigure"):
 
 # Ensure workspace and scripts are in sys.path
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+if os.path.basename(SCRIPT_DIR).lower() == "scripts":
+    PROJECT_ROOT = os.path.dirname(SCRIPT_DIR)
+else:
+    PROJECT_ROOT = SCRIPT_DIR
+
 for p in [SCRIPT_DIR, PROJECT_ROOT]:
     if p not in sys.path:
         sys.path.insert(0, p)
