@@ -43,6 +43,21 @@ def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
+def is_service_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    try:
+        p = psutil.Process(pid)
+        if not p.is_running():
+            return False
+        cmd = " ".join(p.cmdline()).lower()
+        if "python" in p.name().lower() and "legendary_trail_service" in cmd:
+            return True
+        return False
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return False
+
+
 def load_state() -> dict:
     ensure_data_dir()
     if os.path.exists(STATE_FILE):
@@ -51,8 +66,8 @@ def load_state() -> dict:
                 state = json.load(f)
                 pid = state.get("pid")
                 if state.get("status") == "running" and pid:
-                    # Verify if the process is actually running
-                    if not psutil.pid_exists(pid):
+                    # Verify if the process is actually running our service
+                    if not is_service_alive(pid):
                         state["status"] = "sleep"
                         state["pid"] = None
                         save_state(state)
