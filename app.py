@@ -4,6 +4,7 @@ Streamlit Dashboard for Pokemon Remake - Multi-Service Bot
 Provides stateless control with persistent background execution for:
   1. Legendary Trail (Mythical Animal Trial)
   2. Elite Battle (Elite Four Auto-Battler)
+  3. Daily Automation Scheduler (Fires automatically at 9:32 PM IST every day)
 """
 
 import datetime
@@ -12,8 +13,30 @@ import os
 import subprocess
 import sys
 import time
+import zoneinfo
 import psutil
 import streamlit as st
+
+# ==========================================
+# TIMEZONE & REGIONAL CONFIGURATION
+# ==========================================
+def get_local_tz():
+    """Returns local timezone (Asia/Kolkata / IST, UTC+05:30) with fallback."""
+    try:
+        return zoneinfo.ZoneInfo("Asia/Kolkata")
+    except Exception:
+        return datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
+
+
+def get_now_ist() -> datetime.datetime:
+    return datetime.datetime.now(get_local_tz())
+
+
+def format_ist_timestamp(dt: datetime.datetime | None = None) -> str:
+    if dt is None:
+        dt = get_now_ist()
+    return dt.strftime("%Y-%m-%d %H:%M:%S IST")
+
 
 # ==========================================
 # CONFIGURATION & DYNAMIC PATHS
@@ -48,6 +71,17 @@ SERVICE_CONFIGS = {
         "state_file": os.path.join(DATA_DIR, "elite_state.json"),
         "log_file": os.path.join(DATA_DIR, "elite_activity.log"),
         "process_pattern": "elite_battle_service",
+    },
+    "scheduler": {
+        "title": "Daily_Scheduler",
+        "name": "Daily Scheduler (9:32 PM)",
+        "script_candidates": [
+            os.path.join(PROJECT_ROOT, "scripts", "scheduler_service.py"),
+            os.path.join(PROJECT_ROOT, "scheduler_service.py"),
+        ],
+        "state_file": os.path.join(DATA_DIR, "scheduler_state.json"),
+        "log_file": os.path.join(DATA_DIR, "scheduler.log"),
+        "process_pattern": "scheduler_service",
     },
 }
 
@@ -123,12 +157,20 @@ def load_service_state(service_key: str) -> dict:
         default_state.update({"from_layer": 10, "to_layer": 100, "current_layer": None})
     elif service_key == "elite":
         default_state.update({"target_battles": 3, "cleared_battles": 0, "current_trainer": None})
+    elif service_key == "scheduler":
+        default_state.update({
+            "target_service": "elite",
+            "target_time": "21:32",
+            "battles": 3,
+            "next_run": None,
+            "last_run": None
+        })
     return default_state
 
 
 def save_service_state(service_key: str, state: dict):
     ensure_data_dir()
-    state["updated_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state["updated_time"] = format_ist_timestamp()
     state_file = SERVICE_CONFIGS[service_key]["state_file"]
     temp_file = state_file + ".tmp"
     with open(temp_file, "w", encoding="utf-8") as f:
@@ -158,28 +200,70 @@ def stop_service_process(pid: int):
         pass
 
 
+def compute_next_run(target_time_str: str = "21:32") -> datetime.datetime:
+    parts = target_time_str.strip().split(":")
+    hour = int(parts[0])
+    minute = int(parts[1]) if len(parts) > 1 else 0
+
+    now = get_now_ist()
+    target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    if now >= target_today:
+        return target_today + datetime.timedelta(days=1)
+    else:
+        return target_today
+
+
+def format_countdown(next_run_dt: datetime.datetime) -> str:
+    now = get_now_ist()
+    diff_sec = (next_run_dt - now).total_seconds()
+    if diff_sec <= 0:
+        return "due now"
+    h = int(diff_sec // 3600)
+    m = int((diff_sec % 3600) // 60)
+    s = int(diff_sec % 60)
+    if h > 0:
+        return f"{h}h {m}m {s}s"
+    return f"{m}m {s}s"
+
+
 # ==========================================
-# SIDEBAR NAVIGATION & STATUS
+# SIDEBAR NAVIGATION & REAL-TIME STATUS
 # ==========================================
 trail_state = load_service_state("trail")
 elite_state = load_service_state("elite")
+scheduler_state = load_service_state("scheduler")
+
 trail_running = (trail_state.get("status") == "running")
 elite_running = (elite_state.get("status") == "running")
+scheduler_running = (scheduler_state.get("status") == "running")
 
 st.sidebar.title("⚡ Game Bot Services")
 selected_service_name = st.sidebar.radio(
     "Choose Service:",
-    ["Legendary Trail", "Elite Battle"],
-    index=0
+    ["Legendary Trail", "Elite Battle", "Daily Scheduler (9:32 PM)"],
+    index=1
 )
 
 st.sidebar.markdown("---")
 st.sidebar.markdown("### Service Monitors")
 st.sidebar.markdown(f"**Legendary Trail:** {'🟢 running' if trail_running else '⚪ sleep'}")
 st.sidebar.markdown(f"**Elite Battle:** {'🟢 running' if elite_running else '⚪ sleep'}")
+st.sidebar.markdown(f"**9:32 PM Scheduler:** {'🟢 active' if scheduler_running else '⚪ sleep'}")
 
-current_service_key = "trail" if selected_service_name == "Legendary Trail" else "elite"
-current_state = trail_state if current_service_key == "trail" else elite_state
+now_ist = get_now_ist()
+st.sidebar.markdown("---")
+st.sidebar.caption(f"🕒 **Current Local Time:**\n{now_ist.strftime('%I:%M:%S %p')} IST (UTC+5:30)")
+
+# Current selected state
+if selected_service_name == "Legendary Trail":
+    current_service_key = "trail"
+elif selected_service_name == "Elite Battle":
+    current_service_key = "elite"
+else:
+    current_service_key = "scheduler"
+
+current_state = load_service_state(current_service_key)
 is_running = (current_state.get("status") == "running")
 
 
@@ -281,7 +365,7 @@ if current_service_key == "trail":
                 current_state["from_layer"] = from_selection
                 current_state["to_layer"] = to_selection
                 current_state["current_layer"] = from_selection
-                current_state["start_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                current_state["start_time"] = format_ist_timestamp()
                 current_state["device_login_alert"] = False
                 current_state["message"] = f"Started trail from {from_selection} to {to_selection}."
                 save_service_state("trail", current_state)
@@ -305,7 +389,7 @@ if current_service_key == "trail":
 # ==========================================
 # SERVICE UI: 2. ELITE BATTLE
 # ==========================================
-else:
+elif current_service_key == "elite":
     st.title("Elite_battle")
 
     # Status Display
@@ -348,10 +432,33 @@ else:
             "Click **Start Battle** whenever you are ready to resume."
         )
 
+    # Scheduled 9:32 PM Card
+    next_sched_dt = compute_next_run("21:32")
+    countdown_str = format_countdown(next_sched_dt)
+    sched_status_icon = "🟢 Active" if scheduler_running else "⚪ Idle"
+
+    st.markdown(
+        f"""
+        <div style="background-color:#161d2b; border:1px solid #3b82f6; border-radius:8px; padding:14px; margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <h4 style="color:#60a5fa; margin:0 0 4px 0;">⏰ Daily 9:32 PM Auto-Scheduler</h4>
+                    <p style="color:#bfdbfe; margin:0; font-size:14px;">
+                        Fires 3 Elite Battles automatically every day at <b>9:32 PM IST</b> (21:32).
+                    </p>
+                    <p style="color:#93c5fd; margin:4px 0 0 0; font-size:13px;">
+                        Status: <b>{sched_status_icon}</b> | Next Trigger: <b>{next_sched_dt.strftime('%b %d, %I:%M %p')} IST</b> (in {countdown_str})
+                    </p>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
     # Battles Selector (Default: 3, choices: 1, 2, 3, 4)
     col_opt1, col_opt2 = st.columns(2)
     with col_opt1:
-        # Default index 2 corresponds to 3 battles
         target_val = current_state.get("target_battles", 3)
         default_b_idx = ELITE_BATTLE_OPTIONS.index(target_val) if target_val in ELITE_BATTLE_OPTIONS else 2
         battle_selection = st.selectbox(
@@ -380,7 +487,7 @@ else:
     col_btn1, col_btn2 = st.columns([2, 1])
 
     with col_btn1:
-        if st.button("Start Battle", type="primary", use_container_width=True, disabled=is_running):
+        if st.button("Start Battle (Manual)", type="primary", use_container_width=True, disabled=is_running):
             if is_running:
                 st.warning("Elite Battle is already running!")
             else:
@@ -421,7 +528,7 @@ else:
                 current_state["pid"] = proc.pid
                 current_state["target_battles"] = battle_selection
                 current_state["cleared_battles"] = 0
-                current_state["start_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                current_state["start_time"] = format_ist_timestamp()
                 current_state["device_login_alert"] = False
                 current_state["message"] = f"Started Elite Battle ({battle_selection} battles)..."
                 save_service_state("elite", current_state)
@@ -443,8 +550,124 @@ else:
 
 
 # ==========================================
+# SERVICE UI: 3. DAILY SCHEDULER
+# ==========================================
+else:
+    st.title("Daily_Scheduler")
+
+    sched_next_dt = compute_next_run(scheduler_state.get("target_time", "21:32"))
+    countdown_display = format_countdown(sched_next_dt)
+
+    if scheduler_running:
+        st.markdown(
+            f"""
+            <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
+                    Status: running (Scheduler Active)
+                </h3>
+                <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">
+                    PID: {scheduler_state.get('pid')} | Next Run: <b>{sched_next_dt.strftime('%Y-%m-%d %I:%M:%S %p')} IST</b> (in {countdown_display})
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style="background-color:#1c2024; border:1px solid #495057; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#ced4da; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
+                    Status: sleep (Scheduler Inactive)
+                </h3>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The scheduler is currently idle. Enable it below to run everyday at 9:32 PM IST.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Details & Configuration
+    st.markdown("### Scheduler Settings")
+    col_s1, col_s2 = st.columns(2)
+    with col_s1:
+        st.text_input("Scheduled Time (IST, 24-Hour):", value="21:32", disabled=True, help="Fixed at 21:32 (9:32 PM IST)")
+    with col_s2:
+        st.selectbox("Target Service:", options=["Elite Battle (3 Battles)"], index=0, disabled=True)
+
+    st.info(
+        f"🕒 **Timezone Note**: Scheduled to execute at **21:32 IST (9:32 PM)** in Indian Standard Time (UTC+05:30).\n\n"
+        f"• **Current Local Time:** `{now_ist.strftime('%I:%M:%S %p %Z')}`\n"
+        f"• **Next Execution Date:** `{sched_next_dt.strftime('%A, %B %d, %Y at %I:%M:%S %p %Z')}`\n"
+        f"• **Countdown:** `{countdown_display}` remaining."
+    )
+
+    # Scheduler Start/Stop Controls
+    col_sc1, col_sc2 = st.columns([2, 1])
+
+    with col_sc1:
+        if st.button("Start 9:32 PM Daily Scheduler", type="primary", use_container_width=True, disabled=scheduler_running):
+            ensure_data_dir()
+            sub_env = os.environ.copy()
+            sub_env["PYTHONIOENCODING"] = "utf-8"
+            sub_env["PYTHONUTF8"] = "1"
+            sub_env["PYTHONUNBUFFERED"] = "1"
+
+            log_file = SERVICE_CONFIGS["scheduler"]["log_file"]
+            log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+            script_path = resolve_script_path("scheduler")
+            cmd = [
+                sys.executable,
+                script_path,
+                "--target-time", "21:32",
+                "--service", "elite",
+                "--battles", "3"
+            ]
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_handle,
+                stderr=log_handle,
+                stdin=subprocess.DEVNULL,
+                creationflags=creation_flags,
+                env=sub_env
+            )
+            log_handle.close()
+
+            scheduler_state["status"] = "running"
+            scheduler_state["pid"] = proc.pid
+            scheduler_state["target_time"] = "21:32"
+            scheduler_state["target_service"] = "elite"
+            scheduler_state["battles"] = 3
+            scheduler_state["start_time"] = format_ist_timestamp()
+            scheduler_state["next_run"] = format_ist_timestamp(sched_next_dt)
+            scheduler_state["message"] = f"Scheduler active: next run at {sched_next_dt.strftime('%I:%M %p')} IST."
+            save_service_state("scheduler", scheduler_state)
+            st.rerun()
+
+    with col_sc2:
+        if st.button("Stop Scheduler", type="secondary", use_container_width=True, disabled=not scheduler_running):
+            if scheduler_running and scheduler_state.get("pid"):
+                stop_service_process(scheduler_state["pid"])
+                scheduler_state["status"] = "sleep"
+                scheduler_state["pid"] = None
+                scheduler_state["message"] = "Scheduler stopped manually by user."
+                save_service_state("scheduler", scheduler_state)
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### Scheduler Logs")
+    st.code(read_service_logs("scheduler", max_lines=35), language="text")
+
+
+# ==========================================
 # AUTO-REFRESH LOOP
 # ==========================================
-if is_running:
+if is_running or scheduler_running:
     time.sleep(2)
     st.rerun()
