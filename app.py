@@ -84,6 +84,30 @@ SERVICE_CONFIGS = {
         "log_file": os.path.join(DATA_DIR, "league_activity.log"),
         "process_pattern": "pokemon_league_service",
     },
+    "scheduler_league": {
+        "title": "League_Scheduler",
+        "name": "Pokemon League Auto-Pilot",
+        "script_candidates": [
+            os.path.join(PROJECT_ROOT, "scripts", "scheduler_service.py"),
+            os.path.join(PROJECT_ROOT, "scheduler_service.py"),
+        ],
+        "state_file": os.path.join(DATA_DIR, "scheduler_league_state.json"),
+        "log_file": os.path.join(DATA_DIR, "scheduler_league.log"),
+        "process_pattern": "scheduler_service",
+        "service_arg": "league",
+    },
+    "scheduler_elite": {
+        "title": "Elite_Scheduler",
+        "name": "Elite Battle Scheduler",
+        "script_candidates": [
+            os.path.join(PROJECT_ROOT, "scripts", "scheduler_service.py"),
+            os.path.join(PROJECT_ROOT, "scheduler_service.py"),
+        ],
+        "state_file": os.path.join(DATA_DIR, "scheduler_elite_state.json"),
+        "log_file": os.path.join(DATA_DIR, "scheduler_elite.log"),
+        "process_pattern": "scheduler_service",
+        "service_arg": "elite",
+    },
     "scheduler": {
         "title": "Daily_Scheduler",
         "name": "Daily Schedulers",
@@ -94,6 +118,7 @@ SERVICE_CONFIGS = {
         "state_file": os.path.join(DATA_DIR, "scheduler_state.json"),
         "log_file": os.path.join(DATA_DIR, "scheduler.log"),
         "process_pattern": "scheduler_service",
+        "service_arg": "all",
     },
 }
 
@@ -123,7 +148,7 @@ def resolve_script_path(service_key: str) -> str:
     return cfg["script_candidates"][0]
 
 
-def is_service_alive(pid: int, pattern: str) -> bool:
+def is_service_alive(pid: int, pattern: str, required_arg: str | None = None) -> bool:
     if not pid:
         return False
     try:
@@ -132,6 +157,8 @@ def is_service_alive(pid: int, pattern: str) -> bool:
             return False
         cmd = " ".join(p.cmdline()).lower()
         if "python" in p.name().lower() and pattern.lower() in cmd:
+            if required_arg and required_arg.lower() not in cmd:
+                return False
             return True
         return False
     except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
@@ -149,7 +176,8 @@ def load_service_state(service_key: str) -> dict:
                 pid = state.get("pid")
                 if state.get("status") == "running" and pid:
                     # Verify if the process is actually running our service
-                    if not is_service_alive(pid, cfg["process_pattern"]):
+                    req_arg = cfg.get("service_arg")
+                    if not is_service_alive(pid, cfg["process_pattern"], req_arg):
                         state["status"] = "sleep"
                         state["pid"] = None
                         save_service_state(service_key, state)
@@ -172,6 +200,29 @@ def load_service_state(service_key: str) -> dict:
         default_state.update({"target_battles": 3, "cleared_battles": 0, "current_trainer": None})
     elif service_key == "league":
         default_state.update({"target_matches": 10, "completed_matches": 0, "queue_attempts": 0, "cutoff_time": "10:30"})
+    elif service_key == "scheduler_league":
+        next_dt = compute_next_run("09:30")
+        default_state.update({
+            "service": "league",
+            "name": "Pokemon League Daily Auto-Pilot",
+            "from_time": "09:30",
+            "to_time": "10:30",
+            "target_matches": 10,
+            "next_run": format_ist_timestamp(next_dt),
+            "last_run": None,
+            "message": "League Auto-Pilot is idle (sleep)."
+        })
+    elif service_key == "scheduler_elite":
+        next_dt = compute_next_run("21:32")
+        default_state.update({
+            "service": "elite",
+            "name": "Elite Battle Daily Scheduler",
+            "trigger_time": "21:32",
+            "target_battles": 3,
+            "next_run": format_ist_timestamp(next_dt),
+            "last_run": None,
+            "message": "Elite Battle scheduler is idle (sleep)."
+        })
     elif service_key == "scheduler":
         default_state.update({"schedules": {}})
     return default_state
@@ -242,26 +293,31 @@ def format_countdown(next_run_dt: datetime.datetime) -> str:
 trail_state = load_service_state("trail")
 elite_state = load_service_state("elite")
 league_state = load_service_state("league")
-scheduler_state = load_service_state("scheduler")
+sched_league_state = load_service_state("scheduler_league")
+sched_elite_state = load_service_state("scheduler_elite")
 
 trail_running = (trail_state.get("status") == "running")
 elite_running = (elite_state.get("status") == "running")
 league_running = (league_state.get("status") == "running")
-scheduler_running = (scheduler_state.get("status") == "running")
+sched_league_running = (sched_league_state.get("status") == "running")
+sched_elite_running = (sched_elite_state.get("status") == "running")
 
 st.sidebar.title("⚡ Game Bot Services")
 selected_service_name = st.sidebar.radio(
     "Choose Service:",
     ["Legendary Trail", "Elite Battle", "Pokemon League", "Daily Schedulers"],
-    index=2
+    index=3
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Live Monitors")
+st.sidebar.markdown("### Manual Services")
 st.sidebar.markdown(f"**Legendary Trail:** {'🟢 running' if trail_running else '⚪ sleep'}")
 st.sidebar.markdown(f"**Elite Battle:** {'🟢 running' if elite_running else '⚪ sleep'}")
 st.sidebar.markdown(f"**Pokemon League:** {'🟢 running' if league_running else '⚪ sleep'}")
-st.sidebar.markdown(f"**Daily Schedulers:** {'🟢 active' if scheduler_running else '⚪ sleep'}")
+st.sidebar.markdown("---")
+st.sidebar.markdown("### Daily Schedulers")
+st.sidebar.markdown(f"**🏆 League Auto-Pilot:** {'🟢 running' if sched_league_running else '⚪ sleep'}")
+st.sidebar.markdown(f"**🛡️ Elite Scheduler:** {'🟢 running' if sched_elite_running else '⚪ sleep'}")
 
 now_ist = get_now_ist()
 st.sidebar.markdown("---")
@@ -725,21 +781,32 @@ elif current_service_key == "league":
 else:
     st.title("Daily_Schedulers")
 
-    next_l_dt = compute_next_run("09:30")
-    next_e_dt = compute_next_run("21:32")
+    sched_league_state = load_service_state("scheduler_league")
+    sched_elite_state = load_service_state("scheduler_elite")
+    sched_league_running = (sched_league_state.get("status") == "running")
+    sched_elite_running = (sched_elite_state.get("status") == "running")
+
+    # Top Overview / Quick Summary
+    next_l_dt = compute_next_run(sched_league_state.get("from_time", "09:30"))
+    next_e_dt = compute_next_run(sched_elite_state.get("trigger_time", "21:32"))
     countdown_l = format_countdown(next_l_dt)
     countdown_e = format_countdown(next_e_dt)
 
-    if scheduler_running:
+    # -------------------------------------------------------------
+    # SECTION 1: POKEMON LEAGUE DAILY AUTO-PILOT
+    # -------------------------------------------------------------
+    st.markdown("## 🏆 Pokemon League Daily Auto-Pilot")
+
+    if sched_league_running:
         st.markdown(
             f"""
             <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
                 <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
                     <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
-                    Status: running (Master Scheduler Daemon Active)
+                    Status: running (League Auto-Pilot Active)
                 </h3>
                 <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">
-                    PID: {scheduler_state.get('pid')} | All daily automated timers are running in the background.
+                    PID: {sched_league_state.get('pid')} | Window: {sched_league_state.get('from_time', '09:30')} → {sched_league_state.get('to_time', '10:30')} IST | Max: {sched_league_state.get('target_matches', 10)} matches
                 </p>
             </div>
             """,
@@ -751,69 +818,101 @@ else:
             <div style="background-color:#1c2024; border:1px solid #495057; border-radius:8px; padding:12px; margin-bottom:15px;">
                 <h3 style="color:#ced4da; margin:0; display:flex; align-items:center;">
                     <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
-                    Status: sleep (Schedulers Inactive)
+                    Status: sleep (League Auto-Pilot Idle)
                 </h3>
-                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The scheduler daemon is currently idle. Enable it below to automate both schedules.</p>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The Pokemon League daily scheduler is idle. Configure window below and click Start.</p>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    # Active Automated Tasks Overview
-    st.markdown("### Configured Daily Automations")
+    # League Settings (From -> To and Target Matches)
+    st.markdown("#### Schedule Settings (Daily Window & Target)")
+    col_lf, col_lt, col_lm = st.columns([1.5, 1.5, 1.2])
 
-    col_t1, col_t2 = st.columns(2)
-    with col_t1:
-        st.markdown(
-            f"""
-            <div style="background-color:#1a2332; border:1px solid #10b981; border-radius:8px; padding:12px;">
-                <h4 style="color:#34d399; margin:0 0 6px 0;">🏆 Pokemon League</h4>
-                <p style="color:#e2e8f0; margin:0; font-size:14px;"><b>Daily Window:</b> 9:30 AM – 10:30 AM IST</p>
-                <p style="color:#cbd5e1; margin:4px 0; font-size:13px;"><b>Rule:</b> Unlimited queueing until 10 successful player matches or 10:30 AM cutoff.</p>
-                <p style="color:#6ee7b7; margin:6px 0 0 0; font-size:13px;"><b>Next Run:</b> {next_l_dt.strftime('%b %d, %I:%M %p')} IST (in {countdown_l})</p>
-            </div>
-            """,
-            unsafe_allow_html=True
+    with col_lf:
+        cur_from = sched_league_state.get("from_time", "09:30")
+        from_input = st.text_input(
+            "From Time (Start IST):",
+            value=cur_from,
+            disabled=sched_league_running,
+            help="Daily start time in 24-hr format (e.g. 09:30)"
         )
 
-    with col_t2:
-        st.markdown(
-            f"""
-            <div style="background-color:#1a2332; border:1px solid #3b82f6; border-radius:8px; padding:12px;">
-                <h4 style="color:#60a5fa; margin:0 0 6px 0;">🛡️ Elite Battle</h4>
-                <p style="color:#e2e8f0; margin:0; font-size:14px;"><b>Daily Time:</b> 9:32 PM IST</p>
-                <p style="color:#cbd5e1; margin:4px 0; font-size:13px;"><b>Rule:</b> Auto-clears 3 challenger battles (4->3->2->1 fallback).</p>
-                <p style="color:#93c5fd; margin:6px 0 0 0; font-size:13px;"><b>Next Run:</b> {next_e_dt.strftime('%b %d, %I:%M %p')} IST (in {countdown_e})</p>
-            </div>
-            """,
-            unsafe_allow_html=True
+    with col_lt:
+        cur_to = sched_league_state.get("to_time", "10:30")
+        to_input = st.text_input(
+            "To Time (Cutoff IST):",
+            value=cur_to,
+            disabled=sched_league_running,
+            help="Daily cutoff time in 24-hr format (e.g. 10:30)"
         )
 
-    st.markdown("---")
+    with col_lm:
+        cur_matches = sched_league_state.get("target_matches", 10)
+        match_idx = LEAGUE_MATCH_OPTIONS.index(cur_matches) if cur_matches in LEAGUE_MATCH_OPTIONS else 1
+        matches_choice = st.selectbox(
+            "Target Matches:",
+            options=LEAGUE_MATCH_OPTIONS,
+            index=match_idx,
+            disabled=sched_league_running,
+            help="Target successful player encounters"
+        )
 
-    # Master Scheduler Controls
-    col_sc1, col_sc2 = st.columns([2, 1])
+    # Save Settings Button
+    if st.button("💾 Save League Schedule Settings", use_container_width=True, disabled=sched_league_running):
+        clean_from = from_input.strip()
+        clean_to = to_input.strip()
+        # Basic validation
+        if ":" in clean_from and ":" in clean_to:
+            sched_league_state["from_time"] = clean_from
+            sched_league_state["to_time"] = clean_to
+            sched_league_state["target_matches"] = matches_choice
+            nxt = compute_next_run(clean_from)
+            sched_league_state["next_run"] = format_ist_timestamp(nxt)
+            sched_league_state["message"] = f"Settings saved: Daily {clean_from} -> {clean_to} IST (Target: {matches_choice} matches)."
+            save_service_state("scheduler_league", sched_league_state)
+            st.success(f"League schedule saved! Daily window: {clean_from} – {clean_to} IST (Next run: {sched_league_state['next_run']})")
+            st.rerun()
+        else:
+            st.error("Please provide valid times in 24-hour HH:MM format (e.g. 09:30 and 10:30).")
 
-    with col_sc1:
-        if st.button("Start Master Scheduler Daemon", type="primary", use_container_width=True, disabled=scheduler_running):
+    # League Next Run Info Box
+    st.caption(
+        f"📅 **Next Scheduled Run:** {next_l_dt.strftime('%b %d, %Y at %I:%M %p')} IST (in {countdown_l}) | "
+        f"**Last Run:** {sched_league_state.get('last_run') or 'None recorded yet'}"
+    )
+
+    # Start / Stop League Auto-Pilot
+    col_lbtn1, col_lbtn2 = st.columns([2, 1])
+
+    with col_lbtn1:
+        if st.button("▶️ Start League Auto-Pilot", type="primary", use_container_width=True, disabled=sched_league_running):
             ensure_data_dir()
             sub_env = os.environ.copy()
             sub_env["PYTHONIOENCODING"] = "utf-8"
             sub_env["PYTHONUTF8"] = "1"
             sub_env["PYTHONUNBUFFERED"] = "1"
 
-            log_file = SERVICE_CONFIGS["scheduler"]["log_file"]
+            log_file = SERVICE_CONFIGS["scheduler_league"]["log_file"]
             log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
 
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
 
-            script_path = resolve_script_path("scheduler")
+            script_path = resolve_script_path("scheduler_league")
+            from_val = sched_league_state.get("from_time", "09:30")
+            to_val = sched_league_state.get("to_time", "10:30")
+            matches_val = sched_league_state.get("target_matches", 10)
+
             cmd = [
                 sys.executable,
                 script_path,
-                "--service", "all"
+                "--service", "league",
+                "--from-time", str(from_val),
+                "--to-time", str(to_val),
+                "--matches", str(matches_val)
             ]
 
             proc = subprocess.Popen(
@@ -826,31 +925,243 @@ else:
             )
             log_handle.close()
 
-            scheduler_state["status"] = "running"
-            scheduler_state["pid"] = proc.pid
-            scheduler_state["start_time"] = format_ist_timestamp()
-            scheduler_state["message"] = "Master Scheduler active: Pokemon League (9:30 AM) & Elite Battle (9:32 PM)."
-            save_service_state("scheduler", scheduler_state)
+            sched_league_state["status"] = "running"
+            sched_league_state["pid"] = proc.pid
+            sched_league_state["start_time"] = format_ist_timestamp()
+            sched_league_state["message"] = f"League Auto-Pilot running: Daily {from_val} -> {to_val} IST."
+            save_service_state("scheduler_league", sched_league_state)
             st.rerun()
 
-    with col_sc2:
-        if st.button("Stop Master Scheduler", type="secondary", use_container_width=True, disabled=not scheduler_running):
-            if scheduler_running and scheduler_state.get("pid"):
-                stop_service_process(scheduler_state["pid"])
-                scheduler_state["status"] = "sleep"
-                scheduler_state["pid"] = None
-                scheduler_state["message"] = "Master Scheduler stopped manually by user."
-                save_service_state("scheduler", scheduler_state)
+    with col_lbtn2:
+        if st.button("⏹️ Stop League Auto-Pilot", type="secondary", use_container_width=True, disabled=not sched_league_running):
+            if sched_league_running and sched_league_state.get("pid"):
+                stop_service_process(sched_league_state["pid"])
+                sched_league_state["status"] = "sleep"
+                sched_league_state["pid"] = None
+                sched_league_state["message"] = "League Auto-Pilot stopped manually by user."
+                save_service_state("scheduler_league", sched_league_state)
                 st.rerun()
 
+    with st.expander("📄 League Auto-Pilot Logs", expanded=False):
+        st.code(read_service_logs("scheduler_league", max_lines=35), language="text")
+
     st.markdown("---")
-    st.markdown("#### Master Scheduler Logs")
-    st.code(read_service_logs("scheduler", max_lines=35), language="text")
+
+    # -------------------------------------------------------------
+    # SECTION 2: ELITE BATTLE DAILY SCHEDULER
+    # -------------------------------------------------------------
+    st.markdown("## 🛡️ Elite Battle Daily Scheduler")
+
+    if sched_elite_running:
+        st.markdown(
+            f"""
+            <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
+                    Status: running (Elite Battle Scheduler Active)
+                </h3>
+                <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">
+                    PID: {sched_elite_state.get('pid')} | Daily Trigger: {sched_elite_state.get('trigger_time', '21:32')} IST | Battles: {sched_elite_state.get('target_battles', 3)}
+                </p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style="background-color:#1c2024; border:1px solid #495057; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#ced4da; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
+                    Status: sleep (Elite Scheduler Idle)
+                </h3>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The Elite Battle daily scheduler is idle. Configure trigger time below and click Start.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Elite Settings
+    st.markdown("#### Schedule Settings (Trigger Time & Battles)")
+    col_et, col_eb = st.columns([2, 1.2])
+
+    with col_et:
+        cur_etime = sched_elite_state.get("trigger_time", "21:32")
+        etime_input = st.text_input(
+            "Trigger Time (IST):",
+            value=cur_etime,
+            disabled=sched_elite_running,
+            help="Daily trigger time in 24-hr format (e.g. 21:32)"
+        )
+
+    with col_eb:
+        cur_ebattles = sched_elite_state.get("target_battles", 3)
+        ebattle_idx = ELITE_BATTLE_OPTIONS.index(cur_ebattles) if cur_ebattles in ELITE_BATTLE_OPTIONS else 2
+        ebattles_choice = st.selectbox(
+            "Target Battles:",
+            options=ELITE_BATTLE_OPTIONS,
+            index=ebattle_idx,
+            disabled=sched_elite_running,
+            help="Number of challenger battles"
+        )
+
+    # Save Settings Button
+    if st.button("💾 Save Elite Schedule Settings", use_container_width=True, disabled=sched_elite_running):
+        clean_etime = etime_input.strip()
+        if ":" in clean_etime:
+            sched_elite_state["trigger_time"] = clean_etime
+            sched_elite_state["target_battles"] = ebattles_choice
+            nxt = compute_next_run(clean_etime)
+            sched_elite_state["next_run"] = format_ist_timestamp(nxt)
+            sched_elite_state["message"] = f"Settings saved: Daily {clean_etime} IST (Battles: {ebattles_choice})."
+            save_service_state("scheduler_elite", sched_elite_state)
+            st.success(f"Elite Battle schedule saved! Daily at {clean_etime} IST (Next run: {sched_elite_state['next_run']})")
+            st.rerun()
+        else:
+            st.error("Please provide a valid time in 24-hour HH:MM format (e.g. 21:32).")
+
+    # Elite Next Run Info Box
+    st.caption(
+        f"📅 **Next Scheduled Run:** {next_e_dt.strftime('%b %d, %Y at %I:%M %p')} IST (in {countdown_e}) | "
+        f"**Last Run:** {sched_elite_state.get('last_run') or 'None recorded yet'}"
+    )
+
+    # Start / Stop Elite Scheduler
+    col_ebtn1, col_ebtn2 = st.columns([2, 1])
+
+    with col_ebtn1:
+        if st.button("▶️ Start Elite Scheduler", type="primary", use_container_width=True, disabled=sched_elite_running):
+            ensure_data_dir()
+            sub_env = os.environ.copy()
+            sub_env["PYTHONIOENCODING"] = "utf-8"
+            sub_env["PYTHONUTF8"] = "1"
+            sub_env["PYTHONUNBUFFERED"] = "1"
+
+            log_file = SERVICE_CONFIGS["scheduler_elite"]["log_file"]
+            log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+            script_path = resolve_script_path("scheduler_elite")
+            t_val = sched_elite_state.get("trigger_time", "21:32")
+            b_val = sched_elite_state.get("target_battles", 3)
+
+            cmd = [
+                sys.executable,
+                script_path,
+                "--service", "elite",
+                "--time", str(t_val),
+                "--battles", str(b_val)
+            ]
+
+            proc = subprocess.Popen(
+                cmd,
+                stdout=log_handle,
+                stderr=log_handle,
+                stdin=subprocess.DEVNULL,
+                creationflags=creation_flags,
+                env=sub_env
+            )
+            log_handle.close()
+
+            sched_elite_state["status"] = "running"
+            sched_elite_state["pid"] = proc.pid
+            sched_elite_state["start_time"] = format_ist_timestamp()
+            sched_elite_state["message"] = f"Elite Battle scheduler running: Daily {t_val} IST."
+            save_service_state("scheduler_elite", sched_elite_state)
+            st.rerun()
+
+    with col_ebtn2:
+        if st.button("⏹️ Stop Elite Scheduler", type="secondary", use_container_width=True, disabled=not sched_elite_running):
+            if sched_elite_running and sched_elite_state.get("pid"):
+                stop_service_process(sched_elite_state["pid"])
+                sched_elite_state["status"] = "sleep"
+                sched_elite_state["pid"] = None
+                sched_elite_state["message"] = "Elite Battle scheduler stopped manually by user."
+                save_service_state("scheduler_elite", sched_elite_state)
+                st.rerun()
+
+    with st.expander("📄 Elite Scheduler Logs", expanded=False):
+        st.code(read_service_logs("scheduler_elite", max_lines=35), language="text")
+
+    st.markdown("---")
+
+    # -------------------------------------------------------------
+    # SECTION 3: MASTER CONTROLS
+    # -------------------------------------------------------------
+    st.markdown("#### Quick Master Controls")
+    col_m1, col_m2 = st.columns(2)
+    with col_m1:
+        if st.button("🚀 Start Both Schedulers", use_container_width=True, disabled=(sched_league_running and sched_elite_running)):
+            # Start league if not running
+            if not sched_league_running:
+                ensure_data_dir()
+                sub_env = os.environ.copy()
+                sub_env["PYTHONIOENCODING"] = "utf-8"
+                sub_env["PYTHONUTF8"] = "1"
+                sub_env["PYTHONUNBUFFERED"] = "1"
+                log_file = SERVICE_CONFIGS["scheduler_league"]["log_file"]
+                log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0
+                cmd = [
+                    sys.executable, resolve_script_path("scheduler_league"),
+                    "--service", "league",
+                    "--from-time", str(sched_league_state.get("from_time", "09:30")),
+                    "--to-time", str(sched_league_state.get("to_time", "10:30")),
+                    "--matches", str(sched_league_state.get("target_matches", 10))
+                ]
+                proc = subprocess.Popen(cmd, stdout=log_handle, stderr=log_handle, stdin=subprocess.DEVNULL, creationflags=creation_flags, env=sub_env)
+                log_handle.close()
+                sched_league_state["status"] = "running"
+                sched_league_state["pid"] = proc.pid
+                sched_league_state["start_time"] = format_ist_timestamp()
+                save_service_state("scheduler_league", sched_league_state)
+
+            # Start elite if not running
+            if not sched_elite_running:
+                ensure_data_dir()
+                sub_env = os.environ.copy()
+                sub_env["PYTHONIOENCODING"] = "utf-8"
+                sub_env["PYTHONUTF8"] = "1"
+                sub_env["PYTHONUNBUFFERED"] = "1"
+                log_file = SERVICE_CONFIGS["scheduler_elite"]["log_file"]
+                log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+                creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS if sys.platform == "win32" else 0
+                cmd = [
+                    sys.executable, resolve_script_path("scheduler_elite"),
+                    "--service", "elite",
+                    "--time", str(sched_elite_state.get("trigger_time", "21:32")),
+                    "--battles", str(sched_elite_state.get("target_battles", 3))
+                ]
+                proc = subprocess.Popen(cmd, stdout=log_handle, stderr=log_handle, stdin=subprocess.DEVNULL, creationflags=creation_flags, env=sub_env)
+                log_handle.close()
+                sched_elite_state["status"] = "running"
+                sched_elite_state["pid"] = proc.pid
+                sched_elite_state["start_time"] = format_ist_timestamp()
+                save_service_state("scheduler_elite", sched_elite_state)
+
+            st.rerun()
+
+    with col_m2:
+        if st.button("🛑 Stop All Schedulers", use_container_width=True, disabled=(not sched_league_running and not sched_elite_running)):
+            if sched_league_running and sched_league_state.get("pid"):
+                stop_service_process(sched_league_state["pid"])
+                sched_league_state["status"] = "sleep"
+                sched_league_state["pid"] = None
+                save_service_state("scheduler_league", sched_league_state)
+            if sched_elite_running and sched_elite_state.get("pid"):
+                stop_service_process(sched_elite_state["pid"])
+                sched_elite_state["status"] = "sleep"
+                sched_elite_state["pid"] = None
+                save_service_state("scheduler_elite", sched_elite_state)
+            st.rerun()
 
 
 # ==========================================
 # AUTO-REFRESH LOOP
 # ==========================================
-if is_running or scheduler_running:
+if is_running or sched_league_running or sched_elite_running:
     time.sleep(2)
     st.rerun()
