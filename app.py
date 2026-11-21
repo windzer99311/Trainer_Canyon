@@ -48,6 +48,18 @@ if os.path.basename(SCRIPT_DIR).lower() == "scripts":
 else:
     PROJECT_ROOT = SCRIPT_DIR
 
+SCRIPTS_PATH = os.path.join(PROJECT_ROOT, "scripts")
+for p in [SCRIPTS_PATH, PROJECT_ROOT]:
+    if p not in sys.path:
+        sys.path.insert(0, p)
+
+from pokemon_league_task import (
+    load_league_task,
+    save_league_task,
+    update_league_task_settings,
+    compute_next_league_trigger,
+)
+
 DATA_DIR = os.path.join(PROJECT_ROOT, "data")
 
 SERVICE_CONFIGS = {
@@ -786,17 +798,26 @@ else:
     sched_league_running = (sched_league_state.get("status") == "running")
     sched_elite_running = (sched_elite_state.get("status") == "running")
 
-    # Top Overview / Quick Summary
-    next_l_dt = compute_next_run(sched_league_state.get("from_time", "09:30"))
+    # Load daily league task data
+    league_task = load_league_task()
+    l_target = league_task.get("daily_target", 10)
+    l_completed = league_task.get("completed_today", 0)
+    l_remaining = league_task.get("remaining_today", 10)
+    l_is_complete = (l_remaining == 0)
+
+    # Compute next upcoming league run
+    nxt_l_dt, nxt_l_win, nxt_l_needed = compute_next_league_trigger(league_task)
+    countdown_l = format_countdown(nxt_l_dt)
+
     next_e_dt = compute_next_run(sched_elite_state.get("trigger_time", "21:32"))
-    countdown_l = format_countdown(next_l_dt)
     countdown_e = format_countdown(next_e_dt)
 
     # -------------------------------------------------------------
-    # SECTION 1: POKEMON LEAGUE DAILY AUTO-PILOT
+    # SECTION 1: POKEMON LEAGUE DAILY AUTO-PILOT & TASK TRACKER
     # -------------------------------------------------------------
     st.markdown("## 🏆 Pokemon League Daily Auto-Pilot")
 
+    # Status Banner
     if sched_league_running:
         st.markdown(
             f"""
@@ -806,7 +827,7 @@ else:
                     Status: running (League Auto-Pilot Active)
                 </h3>
                 <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">
-                    PID: {sched_league_state.get('pid')} | Window: {sched_league_state.get('from_time', '09:30')} → {sched_league_state.get('to_time', '10:30')} IST | Max: {sched_league_state.get('target_matches', 10)} matches
+                    PID: {sched_league_state.get('pid')} | Next Run: {nxt_l_dt.strftime('%b %d, %I:%M %p')} IST ({nxt_l_win} window in {countdown_l})
                 </p>
             </div>
             """,
@@ -820,67 +841,104 @@ else:
                     <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
                     Status: sleep (League Auto-Pilot Idle)
                 </h3>
-                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The Pokemon League daily scheduler is idle. Configure window below and click Start.</p>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The Pokemon League daily scheduler is idle. Configure schedule below and click Start.</p>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    # League Settings (From -> To and Target Matches)
-    st.markdown("#### Schedule Settings (Daily Window & Target)")
-    col_lf, col_lt, col_lm = st.columns([1.5, 1.5, 1.2])
+    # Daily Goal Progress Card
+    progress_val = min(1.0, max(0.0, l_completed / l_target if l_target > 0 else 1.0))
+    st.markdown(f"#### 🎯 Today's Task Progress: {l_completed} / {l_target} Matches")
+    st.progress(progress_val)
 
-    with col_lf:
-        cur_from = sched_league_state.get("from_time", "09:30")
-        from_input = st.text_input(
-            "From Time (Start IST):",
-            value=cur_from,
-            disabled=sched_league_running,
-            help="Daily start time in 24-hr format (e.g. 09:30)"
-        )
+    col_st1, col_st2, col_st3 = st.columns(3)
+    with col_st1:
+        st.metric("Daily Target", f"{l_target} matches")
+    with col_st2:
+        st.metric("Completed Today", f"{l_completed} matches")
+    with col_st3:
+        st.metric("Remaining Today", f"{l_remaining} matches")
 
-    with col_lt:
-        cur_to = sched_league_state.get("to_time", "10:30")
-        to_input = st.text_input(
-            "To Time (Cutoff IST):",
-            value=cur_to,
-            disabled=sched_league_running,
-            help="Daily cutoff time in 24-hr format (e.g. 10:30)"
-        )
+    if l_is_complete:
+        st.success(f"🎉 **Daily Goal Achieved!** All {l_target} matches have been successfully cleared for today ({league_task.get('date')}).")
+    else:
+        st.info(f"⚡ **In Progress:** Need {l_remaining} more matches today. Auto-Pilot will use the afternoon fallback if not finished in the morning.")
 
-    with col_lm:
-        cur_matches = sched_league_state.get("target_matches", 10)
-        match_idx = LEAGUE_MATCH_OPTIONS.index(cur_matches) if cur_matches in LEAGUE_MATCH_OPTIONS else 1
-        matches_choice = st.selectbox(
-            "Target Matches:",
+    # Dual-Window Schedule Breakdown
+    st.markdown("#### Schedule Windows & Daily Settings")
+
+    m_win_data = league_task.get("morning_window", {})
+    a_win_data = league_task.get("afternoon_window", {})
+
+    col_w1, col_w2 = st.columns(2)
+    with col_w1:
+        st.markdown("**🌅 Primary Morning Window**")
+        col_m_from, col_m_to = st.columns(2)
+        with col_m_from:
+            cur_mf = m_win_data.get("from", "09:30")
+            mf_input = st.text_input("Start (IST):", value=cur_mf, disabled=sched_league_running, key="mf_in", help="Morning start time (24-hr)")
+        with col_m_to:
+            cur_mt = m_win_data.get("to", "10:30")
+            mt_input = st.text_input("Cutoff (IST):", value=cur_mt, disabled=sched_league_running, key="mt_in", help="Morning cutoff time (24-hr)")
+
+        m_status = m_win_data.get("status", "pending")
+        m_cleared = m_win_data.get("matches_cleared", 0)
+        st.caption(f"Status: **{m_status.upper()}** ({m_cleared} matches cleared this morning)")
+
+    with col_w2:
+        st.markdown("**🌇 Afternoon Fallback Window**")
+        col_a_from, col_a_to = st.columns(2)
+        with col_a_from:
+            cur_af = a_win_data.get("from", "16:30")
+            af_input = st.text_input("Start (IST):", value=cur_af, disabled=sched_league_running, key="af_in", help="Afternoon fallback start (24-hr)")
+        with col_a_to:
+            cur_at = a_win_data.get("to", "17:30")
+            at_input = st.text_input("Cutoff (IST):", value=cur_at, disabled=sched_league_running, key="at_in", help="Afternoon fallback cutoff (24-hr)")
+
+        a_status = a_win_data.get("status", "pending")
+        a_cleared = a_win_data.get("matches_cleared", 0)
+        st.caption(f"Status: **{a_status.upper()}** ({a_cleared} matches cleared in afternoon)")
+
+    col_target_sel, col_save_btn = st.columns([1.5, 2])
+    with col_target_sel:
+        target_idx = LEAGUE_MATCH_OPTIONS.index(l_target) if l_target in LEAGUE_MATCH_OPTIONS else 1
+        new_target_choice = st.selectbox(
+            "Daily Match Target:",
             options=LEAGUE_MATCH_OPTIONS,
-            index=match_idx,
+            index=target_idx,
             disabled=sched_league_running,
-            help="Target successful player encounters"
+            key="league_target_choice"
         )
 
-    # Save Settings Button
-    if st.button("💾 Save League Schedule Settings", use_container_width=True, disabled=sched_league_running):
-        clean_from = from_input.strip()
-        clean_to = to_input.strip()
-        # Basic validation
-        if ":" in clean_from and ":" in clean_to:
-            sched_league_state["from_time"] = clean_from
-            sched_league_state["to_time"] = clean_to
-            sched_league_state["target_matches"] = matches_choice
-            nxt = compute_next_run(clean_from)
-            sched_league_state["next_run"] = format_ist_timestamp(nxt)
-            sched_league_state["message"] = f"Settings saved: Daily {clean_from} -> {clean_to} IST (Target: {matches_choice} matches)."
-            save_service_state("scheduler_league", sched_league_state)
-            st.success(f"League schedule saved! Daily window: {clean_from} – {clean_to} IST (Next run: {sched_league_state['next_run']})")
-            st.rerun()
-        else:
-            st.error("Please provide valid times in 24-hour HH:MM format (e.g. 09:30 and 10:30).")
+    with col_save_btn:
+        st.write("")
+        st.write("")
+        if st.button("💾 Save League Schedule Settings", use_container_width=True, disabled=sched_league_running):
+            if ":" in mf_input and ":" in mt_input and ":" in af_input and ":" in at_input:
+                updated_task = update_league_task_settings(
+                    morning_from=mf_input,
+                    morning_to=mt_input,
+                    afternoon_from=af_input,
+                    afternoon_to=at_input,
+                    daily_target=new_target_choice
+                )
+                sched_league_state["from_time"] = mf_input.strip()
+                sched_league_state["to_time"] = mt_input.strip()
+                sched_league_state["afternoon_from"] = af_input.strip()
+                sched_league_state["afternoon_to"] = at_input.strip()
+                sched_league_state["target_matches"] = new_target_choice
+                nxt_d, _, _ = compute_next_league_trigger(updated_task)
+                sched_league_state["next_run"] = format_ist_timestamp(nxt_d)
+                save_service_state("scheduler_league", sched_league_state)
+                st.success("Schedule settings and Pokemon League task configuration saved!")
+                st.rerun()
+            else:
+                st.error("Please enter valid 24-hr times in HH:MM format.")
 
-    # League Next Run Info Box
     st.caption(
-        f"📅 **Next Scheduled Run:** {next_l_dt.strftime('%b %d, %Y at %I:%M %p')} IST (in {countdown_l}) | "
-        f"**Last Run:** {sched_league_state.get('last_run') or 'None recorded yet'}"
+        f"📅 **Next Trigger:** {nxt_l_dt.strftime('%b %d, %Y at %I:%M %p')} IST ({nxt_l_win} window in {countdown_l}) | "
+        f"**Target for Run:** {nxt_l_needed} matches"
     )
 
     # Start / Stop League Auto-Pilot
@@ -902,17 +960,15 @@ else:
                 creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
 
             script_path = resolve_script_path("scheduler_league")
-            from_val = sched_league_state.get("from_time", "09:30")
-            to_val = sched_league_state.get("to_time", "10:30")
-            matches_val = sched_league_state.get("target_matches", 10)
-
             cmd = [
                 sys.executable,
                 script_path,
                 "--service", "league",
-                "--from-time", str(from_val),
-                "--to-time", str(to_val),
-                "--matches", str(matches_val)
+                "--from-time", str(m_win_data.get("from", "09:30")),
+                "--to-time", str(m_win_data.get("to", "10:30")),
+                "--afternoon-from", str(a_win_data.get("from", "16:30")),
+                "--afternoon-to", str(a_win_data.get("to", "17:30")),
+                "--matches", str(l_target)
             ]
 
             proc = subprocess.Popen(
@@ -928,7 +984,7 @@ else:
             sched_league_state["status"] = "running"
             sched_league_state["pid"] = proc.pid
             sched_league_state["start_time"] = format_ist_timestamp()
-            sched_league_state["message"] = f"League Auto-Pilot running: Daily {from_val} -> {to_val} IST."
+            sched_league_state["message"] = f"League Auto-Pilot running: Daily {m_win_data.get('from', '09:30')} -> {m_win_data.get('to', '10:30')} (Fallback: {a_win_data.get('from', '16:30')} -> {a_win_data.get('to', '17:30')} IST)."
             save_service_state("scheduler_league", sched_league_state)
             st.rerun()
 
@@ -941,6 +997,19 @@ else:
                 sched_league_state["message"] = "League Auto-Pilot stopped manually by user."
                 save_service_state("scheduler_league", sched_league_state)
                 st.rerun()
+
+    # History Expander
+    hist = league_task.get("history", [])
+    with st.expander("📜 Pokemon League Task History (Past Days)", expanded=False):
+        if not hist:
+            st.write("No past days recorded yet. Today's progress will archive when tomorrow begins.")
+        else:
+            for h in hist:
+                status_icon = "✅" if h.get("daily_status") == "completed" else "⚠️"
+                st.markdown(
+                    f"- **{h.get('date')}:** {status_icon} **{h.get('completed_today')}/{h.get('daily_target')}** matches cleared "
+                    f"(Morning: {h.get('morning_cleared', 0)}, Afternoon: {h.get('afternoon_cleared', 0)})"
+                )
 
     with st.expander("📄 League Auto-Pilot Logs", expanded=False):
         st.code(read_service_logs("scheduler_league", max_lines=35), language="text")
