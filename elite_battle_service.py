@@ -84,9 +84,27 @@ def ensure_data_dir():
     os.makedirs(DATA_DIR, exist_ok=True)
 
 
+def get_local_tz():
+    try:
+        import zoneinfo
+        return zoneinfo.ZoneInfo("Asia/Kolkata")
+    except Exception:
+        return datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
+
+
+def get_now_ist() -> datetime.datetime:
+    return datetime.datetime.now(get_local_tz())
+
+
+def format_ist_timestamp(dt: datetime.datetime | None = None) -> str:
+    if dt is None:
+        dt = get_now_ist()
+    return dt.strftime("%Y-%m-%d %H:%M:%S IST")
+
+
 def log_activity(msg: str):
-    """Logs message with timestamp to activity log file and console safely."""
-    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    """Logs message with timestamp in IST to activity log file and console safely."""
+    timestamp = format_ist_timestamp()
     formatted = f"[{timestamp}] {msg}"
 
     # 1. Write to log file first
@@ -135,7 +153,7 @@ def update_state(**kwargs):
     ensure_data_dir()
     state = get_current_state()
     state.update(kwargs)
-    state["updated_time"] = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state["updated_time"] = format_ist_timestamp()
     temp_file = STATE_FILE + ".tmp"
     with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(state, f, indent=2)
@@ -324,7 +342,7 @@ def run_elite_service(
         cleared_battles=0,
         current_trainer=None,
         pid=my_pid,
-        start_time=datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        start_time=format_ist_timestamp(),
         device_login_alert=False,
         message=f"Starting Elite Battle run ({target_battles} battles)..."
     )
