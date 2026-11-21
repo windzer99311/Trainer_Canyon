@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """
 Pokemon Remake / Pocket Pet (com.pocketpet.pocpet)
-Daily Automation Scheduler Service
+Multi-Service Daily Automation Scheduler Daemon
 
-Schedules and automatically executes bot services (default: Elite Battle 3 battles)
-every day at a designated local time (default: 9:32 PM / 21:32 IST, Asia/Kolkata).
+Supports automated daily schedules:
+  1. Pokemon League: Everyday at 9:30 AM IST (Runs until 10:30 AM IST or 10 matches cleared)
+  2. Elite Battle: Everyday at 9:32 PM IST (3 battles)
 Runs as an independent background daemon with persistent state and logging.
 """
 
@@ -91,24 +92,64 @@ def log_scheduler(msg: str):
             pass
 
 
+def compute_next_run(target_time_str: str) -> datetime.datetime:
+    """Computes the upcoming datetime in IST for the target HH:MM."""
+    parts = target_time_str.strip().split(":")
+    hour = int(parts[0])
+    minute = int(parts[1]) if len(parts) > 1 else 0
+
+    now = get_now_ist()
+    target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+
+    if now >= target_today:
+        return target_today + datetime.timedelta(days=1)
+    else:
+        return target_today
+
+
+def get_default_schedules() -> dict:
+    next_league = compute_next_run("09:30")
+    next_elite = compute_next_run("21:32")
+    return {
+        "league": {
+            "name": "Pokemon League (Morning Window)",
+            "target_time": "09:30",
+            "cutoff": "10:30",
+            "matches": 10,
+            "next_run": format_ist_timestamp(next_league),
+            "last_run": None,
+            "enabled": True,
+            "description": "Daily 9:30 AM – 10:30 AM IST (Max 10 matches or 10:30 AM cutoff)"
+        },
+        "elite": {
+            "name": "Elite Battle (Night Run)",
+            "target_time": "21:32",
+            "battles": 3,
+            "next_run": format_ist_timestamp(next_elite),
+            "last_run": None,
+            "enabled": True,
+            "description": "Daily 9:32 PM IST (3 Battles)"
+        }
+    }
+
+
 def get_scheduler_state() -> dict:
     ensure_data_dir()
     if os.path.exists(SCHEDULER_STATE_FILE):
         try:
             with open(SCHEDULER_STATE_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
+                state = json.load(f)
+                if "schedules" not in state:
+                    state["schedules"] = get_default_schedules()
+                return state
         except Exception:
             pass
     return {
         "status": "sleep",
-        "target_service": "elite",
-        "target_time": "21:32",
-        "battles": 3,
         "pid": None,
         "start_time": None,
-        "next_run": None,
-        "last_run": None,
         "updated_time": None,
+        "schedules": get_default_schedules(),
         "message": "Scheduler is idle (sleep)."
     }
 
@@ -124,24 +165,13 @@ def update_scheduler_state(**kwargs):
     os.replace(temp_file, SCHEDULER_STATE_FILE)
 
 
-def compute_next_run(target_time_str: str) -> datetime.datetime:
-    """Computes the upcoming datetime in IST for the target HH:MM."""
-    parts = target_time_str.strip().split(":")
-    hour = int(parts[0])
-    minute = int(parts[1]) if len(parts) > 1 else 0
-
-    now = get_now_ist()
-    target_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-
-    if now >= target_today:
-        # Target time already passed today, schedule for tomorrow
-        return target_today + datetime.timedelta(days=1)
-    else:
-        return target_today
-
-
 def resolve_service_script(service_name: str) -> str:
-    if service_name == "elite":
+    if service_name == "league":
+        candidates = [
+            os.path.join(PROJECT_ROOT, "scripts", "pokemon_league_service.py"),
+            os.path.join(PROJECT_ROOT, "pokemon_league_service.py"),
+        ]
+    elif service_name == "elite":
         candidates = [
             os.path.join(PROJECT_ROOT, "scripts", "elite_battle_service.py"),
             os.path.join(PROJECT_ROOT, "elite_battle_service.py"),
@@ -158,9 +188,7 @@ def resolve_service_script(service_name: str) -> str:
 
 
 def run_scheduler_daemon(
-    target_time_str: str = "21:32",
-    target_service: str = "elite",
-    battles: int = 3,
+    target_service: str = "all",
     account: str = "tx263424183",
     password: str = "380746",
     server_id: int = 182,
@@ -168,75 +196,102 @@ def run_scheduler_daemon(
 ):
     my_pid = os.getpid()
     log_scheduler("=" * 65)
-    log_scheduler(f"⏰ DAILY SCHEDULER DAEMON STARTED (PID: {my_pid})")
-    log_scheduler(f"   Target Service: {target_service.upper()} | Battles: {battles}")
-    log_scheduler(f"   Scheduled Time: {target_time_str} IST (9:32 PM) Every Day")
+    log_scheduler(f"⏰ DAILY AUTOMATION SCHEDULER DAEMON STARTED (PID: {my_pid})")
+    log_scheduler(f"   Mode: {target_service.upper()} | Timezone: IST (UTC+05:30)")
+    log_scheduler("   Schedules active:")
+    log_scheduler("     1. Pokemon League: Daily 09:30 AM IST (until 10:30 AM or 10 matches)")
+    log_scheduler("     2. Elite Battle:   Daily 09:32 PM IST (3 battles)")
     log_scheduler("=" * 65)
 
-    next_run = compute_next_run(target_time_str)
-    next_run_str = format_ist_timestamp(next_run)
-    log_scheduler(f"[+] Next scheduled run: {next_run_str}")
+    state = get_scheduler_state()
+    schedules = state.get("schedules", get_default_schedules())
+
+    # Initialize next run times
+    for s_key, s_data in schedules.items():
+        nxt = compute_next_run(s_data["target_time"])
+        s_data["next_run"] = format_ist_timestamp(nxt)
+        log_scheduler(f"[+] [{s_data['name']}] Next trigger: {s_data['next_run']}")
 
     update_scheduler_state(
         status="running",
-        target_service=target_service,
-        target_time=target_time_str,
-        battles=battles,
         pid=my_pid,
         start_time=format_ist_timestamp(),
-        next_run=next_run_str,
-        message=f"Waiting for {target_time_str} IST ({next_run_str})..."
+        schedules=schedules,
+        message="Scheduler active: Monitoring daily schedules for Pokemon League & Elite Battle."
     )
 
     try:
         while True:
             now = get_now_ist()
-            remaining = (next_run - now).total_seconds()
+            state = get_scheduler_state()
+            schedules = state.get("schedules", schedules)
 
-            if remaining <= 0:
-                log_scheduler("=" * 65)
-                log_scheduler(f"🔔 TRIGGER TIME REACHED ({target_time_str} IST)!")
-                log_scheduler(f"   Executing daily scheduled {target_service.upper()} service...")
-                log_scheduler("=" * 65)
+            for s_key in ["league", "elite"]:
+                if target_service != "all" and target_service != s_key:
+                    continue
 
-                if dry_run:
-                    log_scheduler("[DRY-RUN] Simulated battle trigger completed successfully.")
-                else:
-                    script_path = resolve_service_script(target_service)
-                    cmd = [
-                        sys.executable,
-                        script_path,
-                        "--battles", str(battles),
-                        "--account", account,
-                        "--password", password,
-                        "--server-id", str(server_id)
-                    ]
+                s_data = schedules.get(s_key)
+                if not s_data or not s_data.get("enabled", True):
+                    continue
 
-                    # Run service and wait for completion
-                    sub_env = os.environ.copy()
-                    sub_env["PYTHONIOENCODING"] = "utf-8"
-                    sub_env["PYTHONUTF8"] = "1"
-                    sub_env["PYTHONUNBUFFERED"] = "1"
+                target_time = s_data["target_time"]
+                # Parse or compute next run datetime
+                next_run_dt = compute_next_run(target_time)
 
-                    log_scheduler(f"[*] Spawning: {' '.join(cmd)}")
-                    proc = subprocess.Popen(cmd, env=sub_env)
-                    proc.wait()
-                    log_scheduler(f"[+] Service finished with exit code: {proc.returncode}")
+                # Check if current time is within 10 seconds of target or trigger is due
+                now_str = now.strftime("%H:%M")
+                if now_str == target_time and (now.second <= 10):
+                    log_scheduler("=" * 65)
+                    log_scheduler(f"🔔 TRIGGER TIME REACHED FOR {s_data['name'].upper()} ({target_time} IST)!")
+                    log_scheduler("=" * 65)
 
-                last_run_str = format_ist_timestamp()
-                next_run = compute_next_run(target_time_str)
-                next_run_str = format_ist_timestamp(next_run)
+                    if dry_run:
+                        log_scheduler(f"[DRY-RUN] Simulated trigger for {s_key} completed successfully.")
+                    else:
+                        script_path = resolve_service_script(s_key)
+                        if s_key == "league":
+                            cmd = [
+                                sys.executable,
+                                script_path,
+                                "--matches", str(s_data.get("matches", 10)),
+                                "--cutoff", str(s_data.get("cutoff", "10:30")),
+                                "--account", account,
+                                "--password", password,
+                                "--server-id", str(server_id)
+                            ]
+                        else:  # elite
+                            cmd = [
+                                sys.executable,
+                                script_path,
+                                "--battles", str(s_data.get("battles", 3)),
+                                "--account", account,
+                                "--password", password,
+                                "--server-id", str(server_id)
+                            ]
 
-                log_scheduler(f"[+] Completed scheduled execution. Next run set to: {next_run_str}")
-                update_scheduler_state(
-                    last_run=last_run_str,
-                    next_run=next_run_str,
-                    message=f"Last run: {last_run_str}. Next run: {next_run_str}."
-                )
+                        sub_env = os.environ.copy()
+                        sub_env["PYTHONIOENCODING"] = "utf-8"
+                        sub_env["PYTHONUTF8"] = "1"
+                        sub_env["PYTHONUNBUFFERED"] = "1"
 
-            # Sleep in 5-second intervals to remain responsive to state updates
-            sleep_chunk = min(5.0, max(0.5, remaining))
-            time.sleep(sleep_chunk)
+                        log_scheduler(f"[*] Spawning service: {' '.join(cmd)}")
+                        proc = subprocess.Popen(cmd, env=sub_env)
+                        proc.wait()
+                        log_scheduler(f"[+] Service {s_key} finished with exit code: {proc.returncode}")
+
+                    # Update last run and schedule next run (tomorrow)
+                    last_run_str = format_ist_timestamp()
+                    s_data["last_run"] = last_run_str
+                    nxt = compute_next_run(target_time)
+                    s_data["next_run"] = format_ist_timestamp(nxt)
+                    log_scheduler(f"[+] Completed {s_key} run. Next trigger scheduled for: {s_data['next_run']}")
+
+                    update_scheduler_state(schedules=schedules)
+                    # Sleep through the rest of this trigger minute to avoid double firing
+                    time.sleep(60)
+                    break
+
+            time.sleep(5)
 
     except (KeyboardInterrupt, SystemExit):
         log_scheduler("[*] Scheduler daemon received termination signal.")
@@ -252,10 +307,8 @@ def run_scheduler_daemon(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="REA Bot Daily Automation Scheduler")
-    parser.add_argument("--target-time", default="21:32", help="Target time in 24hr HH:MM format (default: 21:32 for 9:32 PM IST)")
-    parser.add_argument("--service", default="elite", choices=["elite", "trail"], help="Service to trigger (default: elite)")
-    parser.add_argument("--battles", default=3, type=int, choices=[1, 2, 3, 4], help="Number of battles for elite (default: 3)")
+    parser = argparse.ArgumentParser(description="Multi-Service Daily Automation Scheduler")
+    parser.add_argument("--service", default="all", choices=["all", "league", "elite"], help="Service(s) to schedule (default: all)")
     parser.add_argument("--account", default="tx263424183", help="Account name")
     parser.add_argument("--password", default="380746", help="Account password")
     parser.add_argument("--server-id", default=182, type=int, help="Server ID")
@@ -263,9 +316,7 @@ def main():
     args = parser.parse_args()
 
     run_scheduler_daemon(
-        target_time_str=args.target_time,
         target_service=args.service,
-        battles=args.battles,
         account=args.account,
         password=args.password,
         server_id=args.server_id,
