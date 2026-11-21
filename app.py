@@ -3,8 +3,9 @@
 Streamlit Dashboard for Pokemon Remake - Multi-Service Bot
 Provides stateless control with persistent background execution for:
   1. Legendary Trail (Mythical Animal Trial)
-  2. Elite Battle (Elite Four Auto-Battler)
-  3. Daily Automation Scheduler (Fires automatically at 9:32 PM IST every day)
+  2. Elite Battle (Elite Four Auto-Battler - Daily 9:32 PM)
+  3. Pokemon League (Matchmaking & Dual-Socket Battle - Daily 9:30 AM – 10:30 AM)
+  4. Multi-Service Daily Automation Scheduler
 """
 
 import datetime
@@ -72,9 +73,20 @@ SERVICE_CONFIGS = {
         "log_file": os.path.join(DATA_DIR, "elite_activity.log"),
         "process_pattern": "elite_battle_service",
     },
+    "league": {
+        "title": "Pokemon_league",
+        "name": "Pokemon League",
+        "script_candidates": [
+            os.path.join(PROJECT_ROOT, "scripts", "pokemon_league_service.py"),
+            os.path.join(PROJECT_ROOT, "pokemon_league_service.py"),
+        ],
+        "state_file": os.path.join(DATA_DIR, "league_state.json"),
+        "log_file": os.path.join(DATA_DIR, "league_activity.log"),
+        "process_pattern": "pokemon_league_service",
+    },
     "scheduler": {
         "title": "Daily_Scheduler",
-        "name": "Daily Scheduler (9:32 PM)",
+        "name": "Daily Schedulers",
         "script_candidates": [
             os.path.join(PROJECT_ROOT, "scripts", "scheduler_service.py"),
             os.path.join(PROJECT_ROOT, "scheduler_service.py"),
@@ -87,6 +99,7 @@ SERVICE_CONFIGS = {
 
 LAYER_OPTIONS = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
 ELITE_BATTLE_OPTIONS = [1, 2, 3, 4]
+LEAGUE_MATCH_OPTIONS = [5, 10, 15, 20]
 
 st.set_page_config(
     page_title="REA Bot Services",
@@ -157,14 +170,10 @@ def load_service_state(service_key: str) -> dict:
         default_state.update({"from_layer": 10, "to_layer": 100, "current_layer": None})
     elif service_key == "elite":
         default_state.update({"target_battles": 3, "cleared_battles": 0, "current_trainer": None})
+    elif service_key == "league":
+        default_state.update({"target_matches": 10, "completed_matches": 0, "queue_attempts": 0, "cutoff_time": "10:30"})
     elif service_key == "scheduler":
-        default_state.update({
-            "target_service": "elite",
-            "target_time": "21:32",
-            "battles": 3,
-            "next_run": None,
-            "last_run": None
-        })
+        default_state.update({"schedules": {}})
     return default_state
 
 
@@ -200,7 +209,7 @@ def stop_service_process(pid: int):
         pass
 
 
-def compute_next_run(target_time_str: str = "21:32") -> datetime.datetime:
+def compute_next_run(target_time_str: str) -> datetime.datetime:
     parts = target_time_str.strip().split(":")
     hour = int(parts[0])
     minute = int(parts[1]) if len(parts) > 1 else 0
@@ -232,24 +241,27 @@ def format_countdown(next_run_dt: datetime.datetime) -> str:
 # ==========================================
 trail_state = load_service_state("trail")
 elite_state = load_service_state("elite")
+league_state = load_service_state("league")
 scheduler_state = load_service_state("scheduler")
 
 trail_running = (trail_state.get("status") == "running")
 elite_running = (elite_state.get("status") == "running")
+league_running = (league_state.get("status") == "running")
 scheduler_running = (scheduler_state.get("status") == "running")
 
 st.sidebar.title("⚡ Game Bot Services")
 selected_service_name = st.sidebar.radio(
     "Choose Service:",
-    ["Legendary Trail", "Elite Battle", "Daily Scheduler (9:32 PM)"],
-    index=1
+    ["Legendary Trail", "Elite Battle", "Pokemon League", "Daily Schedulers"],
+    index=2
 )
 
 st.sidebar.markdown("---")
-st.sidebar.markdown("### Service Monitors")
+st.sidebar.markdown("### Live Monitors")
 st.sidebar.markdown(f"**Legendary Trail:** {'🟢 running' if trail_running else '⚪ sleep'}")
 st.sidebar.markdown(f"**Elite Battle:** {'🟢 running' if elite_running else '⚪ sleep'}")
-st.sidebar.markdown(f"**9:32 PM Scheduler:** {'🟢 active' if scheduler_running else '⚪ sleep'}")
+st.sidebar.markdown(f"**Pokemon League:** {'🟢 running' if league_running else '⚪ sleep'}")
+st.sidebar.markdown(f"**Daily Schedulers:** {'🟢 active' if scheduler_running else '⚪ sleep'}")
 
 now_ist = get_now_ist()
 st.sidebar.markdown("---")
@@ -260,6 +272,8 @@ if selected_service_name == "Legendary Trail":
     current_service_key = "trail"
 elif selected_service_name == "Elite Battle":
     current_service_key = "elite"
+elif selected_service_name == "Pokemon League":
+    current_service_key = "league"
 else:
     current_service_key = "scheduler"
 
@@ -550,13 +564,171 @@ elif current_service_key == "elite":
 
 
 # ==========================================
-# SERVICE UI: 3. DAILY SCHEDULER
+# SERVICE UI: 3. POKEMON LEAGUE
+# ==========================================
+elif current_service_key == "league":
+    st.title("Pokemon_league")
+
+    # Status Display
+    if is_running:
+        cleared_m = current_state.get("completed_matches", 0)
+        target_m = current_state.get("target_matches", 10)
+        q_attempts = current_state.get("queue_attempts", 0)
+        cutoff_val = current_state.get("cutoff_time", "10:30")
+        st.markdown(
+            f"""
+            <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
+                    Status: running (Matches: {cleared_m}/{target_m} | Queues: {q_attempts})
+                </h3>
+                <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">PID: {current_state.get('pid')} | Started: {current_state.get('start_time')} | Cutoff: {cutoff_val} IST</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            """
+            <div style="background-color:#1c2024; border:1px solid #495057; border-radius:8px; padding:12px; margin-bottom:15px;">
+                <h3 style="color:#ced4da; margin:0; display:flex; align-items:center;">
+                    <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
+                    Status: sleep
+                </h3>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">Pokemon League service is idle and ready.</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    # Device Login Alert Banner
+    if current_state.get("device_login_alert"):
+        st.error(
+            "🚨 **DEVICE LOGIN DETECTED**: You logged into the game from your mobile device! "
+            "Pokemon League was automatically stopped and put into **sleep** mode to avoid session conflict. "
+            "Click **Start League Run** whenever you are ready to resume."
+        )
+
+    # Daily Schedule Information Banner
+    next_league_dt = compute_next_run("09:30")
+    league_countdown = format_countdown(next_league_dt)
+    sched_status_icon = "🟢 Active" if scheduler_running else "⚪ Idle"
+
+    st.markdown(
+        f"""
+        <div style="background-color:#161d2b; border:1px solid #10b981; border-radius:8px; padding:14px; margin-bottom:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div>
+                    <h4 style="color:#34d399; margin:0 0 4px 0;">⏰ Daily Morning Auto-Schedule: 9:30 AM – 10:30 AM IST</h4>
+                    <p style="color:#d1fae5; margin:0; font-size:14px;">
+                        Runs matchmaking continuously between <b>9:30 AM and 10:30 AM IST</b>. Stops immediately when <b>10 successful player matches</b> are cleared or time exceeds <b>10:30 AM</b>.
+                    </p>
+                    <p style="color:#a7f3d0; margin:4px 0 0 0; font-size:13px;">
+                        Master Scheduler: <b>{sched_status_icon}</b> | Next Trigger: <b>{next_league_dt.strftime('%b %d, %I:%M %p')} IST</b> (in {league_countdown})
+                    </p>
+                </div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True
+    )
+
+    # Parameters
+    col_l1, col_l2 = st.columns(2)
+    with col_l1:
+        target_val = current_state.get("target_matches", 10)
+        default_m_idx = LEAGUE_MATCH_OPTIONS.index(target_val) if target_val in LEAGUE_MATCH_OPTIONS else 1
+        matches_selection = st.selectbox(
+            "Target Successful Matches:",
+            options=LEAGUE_MATCH_OPTIONS,
+            index=default_m_idx,
+            disabled=is_running
+        )
+
+    with col_l2:
+        cutoff_selection = st.text_input(
+            "Cutoff Time (24-Hour IST):",
+            value=current_state.get("cutoff_time", "10:30"),
+            disabled=is_running,
+            help="Session stops if current time reaches or exceeds this cutoff."
+        )
+
+    # Start / Stop Buttons
+    col_btn1, col_btn2 = st.columns([2, 1])
+
+    with col_btn1:
+        if st.button("Start League Run (Manual)", type="primary", use_container_width=True, disabled=is_running):
+            if is_running:
+                st.warning("Pokemon League is already running!")
+            else:
+                ensure_data_dir()
+                sub_env = os.environ.copy()
+                sub_env["PYTHONIOENCODING"] = "utf-8"
+                sub_env["PYTHONUTF8"] = "1"
+                sub_env["PYTHONUNBUFFERED"] = "1"
+
+                log_file = SERVICE_CONFIGS["league"]["log_file"]
+                log_handle = open(log_file, "a", encoding="utf-8", errors="replace")
+
+                creation_flags = 0
+                if sys.platform == "win32":
+                    creation_flags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+
+                script_path = resolve_script_path("league")
+                cmd = [
+                    sys.executable,
+                    script_path,
+                    "--matches", str(matches_selection),
+                    "--cutoff", str(cutoff_selection).strip()
+                ]
+
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout=log_handle,
+                    stderr=log_handle,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creation_flags,
+                    env=sub_env
+                )
+                log_handle.close()
+
+                current_state["status"] = "running"
+                current_state["pid"] = proc.pid
+                current_state["target_matches"] = matches_selection
+                current_state["completed_matches"] = 0
+                current_state["queue_attempts"] = 0
+                current_state["cutoff_time"] = cutoff_selection
+                current_state["start_time"] = format_ist_timestamp()
+                current_state["device_login_alert"] = False
+                current_state["message"] = f"Started League run (Target: {matches_selection} matches, Cutoff: {cutoff_selection} IST)..."
+                save_service_state("league", current_state)
+                st.rerun()
+
+    with col_btn2:
+        if st.button("Stop League Run", type="secondary", use_container_width=True, disabled=not is_running):
+            if is_running and current_state.get("pid"):
+                stop_service_process(current_state["pid"])
+                current_state["status"] = "sleep"
+                current_state["pid"] = None
+                current_state["message"] = "Pokemon League stopped manually by user."
+                save_service_state("league", current_state)
+                st.rerun()
+
+    st.markdown("---")
+    st.markdown("#### Live Activity Logs")
+    st.code(read_service_logs("league", max_lines=35), language="text")
+
+
+# ==========================================
+# SERVICE UI: 4. DAILY SCHEDULERS
 # ==========================================
 else:
-    st.title("Daily_Scheduler")
+    st.title("Daily_Schedulers")
 
-    sched_next_dt = compute_next_run(scheduler_state.get("target_time", "21:32"))
-    countdown_display = format_countdown(sched_next_dt)
+    next_l_dt = compute_next_run("09:30")
+    next_e_dt = compute_next_run("21:32")
+    countdown_l = format_countdown(next_l_dt)
+    countdown_e = format_countdown(next_e_dt)
 
     if scheduler_running:
         st.markdown(
@@ -564,10 +736,10 @@ else:
             <div style="background-color:#0e2a18; border:2px solid #28a745; border-radius:8px; padding:12px; margin-bottom:15px;">
                 <h3 style="color:#28a745; margin:0; display:flex; align-items:center;">
                     <span style="display:inline-block; width:12px; height:12px; background-color:#28a745; border-radius:50%; margin-right:10px;"></span>
-                    Status: running (Scheduler Active)
+                    Status: running (Master Scheduler Daemon Active)
                 </h3>
                 <p style="color:#a5d6a7; margin:5px 0 0 22px; font-size:14px;">
-                    PID: {scheduler_state.get('pid')} | Next Run: <b>{sched_next_dt.strftime('%Y-%m-%d %I:%M:%S %p')} IST</b> (in {countdown_display})
+                    PID: {scheduler_state.get('pid')} | All daily automated timers are running in the background.
                 </p>
             </div>
             """,
@@ -579,34 +751,51 @@ else:
             <div style="background-color:#1c2024; border:1px solid #495057; border-radius:8px; padding:12px; margin-bottom:15px;">
                 <h3 style="color:#ced4da; margin:0; display:flex; align-items:center;">
                     <span style="display:inline-block; width:12px; height:12px; background-color:#6c757d; border-radius:50%; margin-right:10px;"></span>
-                    Status: sleep (Scheduler Inactive)
+                    Status: sleep (Schedulers Inactive)
                 </h3>
-                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The scheduler is currently idle. Enable it below to run everyday at 9:32 PM IST.</p>
+                <p style="color:#adb5bd; margin:5px 0 0 22px; font-size:14px;">The scheduler daemon is currently idle. Enable it below to automate both schedules.</p>
             </div>
             """,
             unsafe_allow_html=True
         )
 
-    # Details & Configuration
-    st.markdown("### Scheduler Settings")
-    col_s1, col_s2 = st.columns(2)
-    with col_s1:
-        st.text_input("Scheduled Time (IST, 24-Hour):", value="21:32", disabled=True, help="Fixed at 21:32 (9:32 PM IST)")
-    with col_s2:
-        st.selectbox("Target Service:", options=["Elite Battle (3 Battles)"], index=0, disabled=True)
+    # Active Automated Tasks Overview
+    st.markdown("### Configured Daily Automations")
 
-    st.info(
-        f"🕒 **Timezone Note**: Scheduled to execute at **21:32 IST (9:32 PM)** in Indian Standard Time (UTC+05:30).\n\n"
-        f"• **Current Local Time:** `{now_ist.strftime('%I:%M:%S %p %Z')}`\n"
-        f"• **Next Execution Date:** `{sched_next_dt.strftime('%A, %B %d, %Y at %I:%M:%S %p %Z')}`\n"
-        f"• **Countdown:** `{countdown_display}` remaining."
-    )
+    col_t1, col_t2 = st.columns(2)
+    with col_t1:
+        st.markdown(
+            f"""
+            <div style="background-color:#1a2332; border:1px solid #10b981; border-radius:8px; padding:12px;">
+                <h4 style="color:#34d399; margin:0 0 6px 0;">🏆 Pokemon League</h4>
+                <p style="color:#e2e8f0; margin:0; font-size:14px;"><b>Daily Window:</b> 9:30 AM – 10:30 AM IST</p>
+                <p style="color:#cbd5e1; margin:4px 0; font-size:13px;"><b>Rule:</b> Unlimited queueing until 10 successful player matches or 10:30 AM cutoff.</p>
+                <p style="color:#6ee7b7; margin:6px 0 0 0; font-size:13px;"><b>Next Run:</b> {next_l_dt.strftime('%b %d, %I:%M %p')} IST (in {countdown_l})</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
 
-    # Scheduler Start/Stop Controls
+    with col_t2:
+        st.markdown(
+            f"""
+            <div style="background-color:#1a2332; border:1px solid #3b82f6; border-radius:8px; padding:12px;">
+                <h4 style="color:#60a5fa; margin:0 0 6px 0;">🛡️ Elite Battle</h4>
+                <p style="color:#e2e8f0; margin:0; font-size:14px;"><b>Daily Time:</b> 9:32 PM IST</p>
+                <p style="color:#cbd5e1; margin:4px 0; font-size:13px;"><b>Rule:</b> Auto-clears 3 challenger battles (4->3->2->1 fallback).</p>
+                <p style="color:#93c5fd; margin:6px 0 0 0; font-size:13px;"><b>Next Run:</b> {next_e_dt.strftime('%b %d, %I:%M %p')} IST (in {countdown_e})</p>
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+    st.markdown("---")
+
+    # Master Scheduler Controls
     col_sc1, col_sc2 = st.columns([2, 1])
 
     with col_sc1:
-        if st.button("Start 9:32 PM Daily Scheduler", type="primary", use_container_width=True, disabled=scheduler_running):
+        if st.button("Start Master Scheduler Daemon", type="primary", use_container_width=True, disabled=scheduler_running):
             ensure_data_dir()
             sub_env = os.environ.copy()
             sub_env["PYTHONIOENCODING"] = "utf-8"
@@ -624,9 +813,7 @@ else:
             cmd = [
                 sys.executable,
                 script_path,
-                "--target-time", "21:32",
-                "--service", "elite",
-                "--battles", "3"
+                "--service", "all"
             ]
 
             proc = subprocess.Popen(
@@ -641,27 +828,23 @@ else:
 
             scheduler_state["status"] = "running"
             scheduler_state["pid"] = proc.pid
-            scheduler_state["target_time"] = "21:32"
-            scheduler_state["target_service"] = "elite"
-            scheduler_state["battles"] = 3
             scheduler_state["start_time"] = format_ist_timestamp()
-            scheduler_state["next_run"] = format_ist_timestamp(sched_next_dt)
-            scheduler_state["message"] = f"Scheduler active: next run at {sched_next_dt.strftime('%I:%M %p')} IST."
+            scheduler_state["message"] = "Master Scheduler active: Pokemon League (9:30 AM) & Elite Battle (9:32 PM)."
             save_service_state("scheduler", scheduler_state)
             st.rerun()
 
     with col_sc2:
-        if st.button("Stop Scheduler", type="secondary", use_container_width=True, disabled=not scheduler_running):
+        if st.button("Stop Master Scheduler", type="secondary", use_container_width=True, disabled=not scheduler_running):
             if scheduler_running and scheduler_state.get("pid"):
                 stop_service_process(scheduler_state["pid"])
                 scheduler_state["status"] = "sleep"
                 scheduler_state["pid"] = None
-                scheduler_state["message"] = "Scheduler stopped manually by user."
+                scheduler_state["message"] = "Master Scheduler stopped manually by user."
                 save_service_state("scheduler", scheduler_state)
                 st.rerun()
 
     st.markdown("---")
-    st.markdown("#### Scheduler Logs")
+    st.markdown("#### Master Scheduler Logs")
     st.code(read_service_logs("scheduler", max_lines=35), language="text")
 
 
