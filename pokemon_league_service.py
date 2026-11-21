@@ -269,12 +269,14 @@ def run_league_service(
     timeout: float = 40.0,
     interval: float = 1.0,
     match_duration: float = 60.0,
+    window: str | None = None,
     dry_run: bool = False
 ):
     my_pid = os.getpid()
     log_activity("=" * 65)
     log_activity(f"🏆 POKEMON LEAGUE SERVICE STARTED (PID: {my_pid})")
-    log_activity(f"   Target Matches: {target_matches} | Cutoff Time: {cutoff_time_str} IST")
+    window_txt = f" [{window.upper()} WINDOW]" if window else ""
+    log_activity(f"   Target Matches: {target_matches} | Cutoff Time: {cutoff_time_str} IST{window_txt}")
     log_activity(f"   Account: {account} | Server ID: {server_id}")
     log_activity("=" * 65)
 
@@ -374,6 +376,18 @@ def run_league_service(
         else:
             summary = f"Session concluded at cutoff: {completed_matches}/{target_matches} matches cleared in {queue_attempts} queue attempts."
 
+        # Automatically update Pokemon_League_Task tracker
+        if completed_matches > 0:
+            try:
+                from pokemon_league_task import record_matches_cleared
+                task_st = record_matches_cleared(completed_matches, window_name=window)
+                log_activity(
+                    f"[📊] Pokemon_League_Task Updated: {task_st['completed_today']}/{task_st['daily_target']} "
+                    f"matches completed today ({task_st['remaining_today']} remaining)."
+                )
+            except Exception as e:
+                log_activity(f"[-] Could not update pokemon_league_task: {e}")
+
         log_activity(f"[+] {summary}")
         update_state(
             status="sleep",
@@ -386,6 +400,12 @@ def run_league_service(
     except DeviceLoginKickException as e:
         alert_msg = "DEVICE LOGIN DETECTED: You logged into the game from your mobile device! Service stopped immediately."
         log_activity(f"[ALERT] {alert_msg}")
+        if completed_matches > 0:
+            try:
+                from pokemon_league_task import record_matches_cleared
+                record_matches_cleared(completed_matches, window_name=window)
+            except Exception:
+                pass
         update_state(
             status="sleep",
             pid=None,
@@ -398,6 +418,12 @@ def run_league_service(
         err_msg = f"Pokemon League service encountered an error: {e}"
         log_activity(f"[-] {err_msg}")
         log_activity(f"Traceback:\n{tb}")
+        if completed_matches > 0:
+            try:
+                from pokemon_league_task import record_matches_cleared
+                record_matches_cleared(completed_matches, window_name=window)
+            except Exception:
+                pass
         update_state(
             status="sleep",
             pid=None,
@@ -412,6 +438,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pokemon League Automated Service")
     parser.add_argument("--matches", "-n", dest="matches", type=int, default=10, help="Target successful matches (default: 10)")
     parser.add_argument("--cutoff", dest="cutoff", default="10:30", help="Cutoff time in 24hr HH:MM format (default: 10:30 IST)")
+    parser.add_argument("--window", default=None, choices=["morning", "afternoon", "manual"], help="Task window name (default: None)")
     parser.add_argument("--account", "-a", default="tx263424183", help="Account username")
     parser.add_argument("--password", "-p", default="380746", help="Account password")
     parser.add_argument("--server-id", "-s", default=182, type=int, help="Server ID (default: 182)")
@@ -423,6 +450,7 @@ def main():
     run_league_service(
         target_matches=args.matches,
         cutoff_time_str=args.cutoff,
+        window=args.window,
         account=args.account,
         password=args.password,
         server_id=args.server_id,
