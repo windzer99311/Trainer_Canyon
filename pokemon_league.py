@@ -55,7 +55,7 @@ CMD_BATTLE_ACTION = 10012           # 0x271c - Battle Move Selection ('fs')
 # ==========================================
 PLAINTEXT_1911_INIT = b"fr"
 PLAINTEXT_1901_LEAGUE = bytes.fromhex(
-    "7c7b7decec84366291bf6061667ac2ec9a2b7e950866697bc8e38c2c71a10e607d7ce388e32b65c64b61667afcfe822c71fb2d607d7cf1fe992a65b251"
+    "7c7b7decec843662eba76061677ac2ec9a2b7ea9fe75737b66d4e48d3963d51d677c69d587f02c64eb657c7a66b9f9833963f55d677c69cfd5ff2c64fa76"
 )
 
 # Default Battle Room Handshake Key (53 bytes fallback)
